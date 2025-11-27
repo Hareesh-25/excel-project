@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Delivery — Flashy GUI + Routing</title>
+
+<!-- GSAP for smooth animations -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+
+<style>
+  :root{
+    --bg:#071017;
+    --panel: rgba(255,255,255,0.06);
+    --accentA: #1fb6ff;
+    --accentB: #ffb86b;
+    --glass-border: rgba(255,255,255,0.08);
+    --neonA: rgba(31,182,255,0.12);
+    --neonB: rgba(255,184,107,0.10);
+  }
+
+  html,body { height:100%; margin:0; background:linear-gradient(180deg,#041018 0%, #071a22 100%); font-family: Inter, system-ui, Arial; color:#e6f7ff; -webkit-user-select:none; user-select:none; }
+  #app { display:flex; height:100vh; width:100vw; overflow:hidden; }
+
+  /* left: canvas area */
+  #mapWrap { position:relative; flex:1; display:block; overflow:hidden; }
+  canvas#map { width:100%; height:100%; display:block; background: linear-gradient(180deg, rgba(10,20,30,0.8), rgba(5,10,15,0.9)); }
+
+  /* top bar overlay */
+  #topbar { position:absolute; left:18px; top:14px; right:320px; height:54px; display:flex; align-items:center; gap:12px; pointer-events:none; }
+  .logo {
+    pointer-events:auto;
+    background: linear-gradient(90deg,var(--accentA),#7afcff);
+    color:#021018; font-weight:700; padding:8px 12px; border-radius:10px; box-shadow:0 6px 30px rgba(31,182,255,0.08);
+    font-size:14px;
+  }
+  .controls { pointer-events:auto; margin-left:8px; display:flex; gap:8px; align-items:center; }
+  .btn {
+    pointer-events:auto;
+    background:var(--panel); border:1px solid var(--glass-border); color:#dff6ff; padding:8px 12px; border-radius:10px; cursor:pointer;
+    backdrop-filter: blur(6px);
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .btn:hover{ transform:translateY(-2px); box-shadow:0 10px 40px rgba(0,0,0,0.45); }
+
+  /* right panel */
+  #panel {
+    width:320px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+    border-left:1px solid rgba(255,255,255,0.03);
+    padding:18px;
+    box-sizing:border-box;
+    backdrop-filter: blur(8px);
+  }
+  h2 { margin:0 0 8px 0; color:var(--accentA); font-size:18px; }
+  .section { margin-bottom:14px; }
+  .small { font-size:12px; color:#bcdff0; opacity:0.9; }
+  .statRow { display:flex; justify-content:space-between; padding:8px 10px; background:rgba(255,255,255,0.02); border-radius:8px; margin-bottom:8px; border:1px solid rgba(255,255,255,0.02); }
+  .logBox { height:230px; overflow:auto; background:rgba(0,0,0,0.18); padding:8px; border-radius:8px; border:1px solid rgba(255,255,255,0.02); font-size:12px; }
+
+  .agentList { max-height:120px; overflow:auto; padding:6px; border-radius:8px; }
+  .agentItem { display:flex; justify-content:space-between; margin-bottom:6px; padding:6px 8px; background:rgba(0,0,0,0.18); border-radius:8px; align-items:center; font-size:13px; }
+  .badge { padding:4px 8px; border-radius:999px; background:rgba(255,255,255,0.03); font-size:12px; }
+
+  /* legend */
+  .legendRow { display:flex; gap:8px; align-items:center; margin:6px 0; }
+  .dot { width:12px; height:12px; border-radius:50%; box-shadow:0 0 12px currentColor; }
+
+  /* responsive */
+  @media (max-width:900px){ #panel{ display:none } #topbar{ right:10px; } }
+</style>
+</head>
+<body>
+  <div id="app">
+    <div id="mapWrap">
+      <canvas id="map"></canvas>
+
+      <!-- overlay topbar -->
+      <div id="topbar">
+        <div class="logo">GRID ROADS — Delivery Prototype</div>
+        <div class="controls">
+          <button id="addOrderBtn" class="btn">Add Order</button>
+          <button id="cancelModeBtn" class="btn">Cancel</button>
+          <button id="clearBtn" class="btn">Clear Orders</button>
+          <button id="pauseSimBtn" class="btn">Pause</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="panel">
+      <h2>Dashboard</h2>
+
+      <div class="section">
+        <div class="statRow"><div>Pending Orders</div><div id="statPending">0</div></div>
+        <div class="statRow"><div>Active Agents</div><div id="statAgents">0</div></div>
+        <div class="statRow"><div>Avg Route Len</div><div id="statRoute">0</div></div>
+      </div>
+
+      <div class="section">
+        <div class="small">Agents</div>
+        <div class="agentList" id="agentList"></div>
+      </div>
+
+      <div class="section">
+        <div class="small">Legend</div>
+        <div class="legendRow"><div class="dot" style="background:var(--accentA); color:var(--accentA)"></div> Sector A</div>
+        <div class="legendRow"><div class="dot" style="background:var(--accentB); color:var(--accentB)"></div> Sector B</div>
+      </div>
+
+      <div class="section">
+        <div class="small">Logs</div>
+        <div class="logBox" id="log"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ========= Flashy GUI + Full routing logic integrated =========
+   This file contains:
+   - Canvas rendering (grid, buildings, roads)
+   - A* pathfinding (no diagonals)
+   - Order/agent logic (assign, reroute, starvation prevention, cancel at waypoint)
+   - Smooth movement with GSAP for agents
+   - Pause/reroute on pickup/delivery
+   - Clear reset and dashboard
+   Drop into your Electron project and run `npm start`.
+*/
+
+// ---------- Canvas setup ----------
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+let W = canvas.width = Math.floor(window.innerWidth - 320); // leave panel width
+let H = canvas.height = window.innerHeight;
+const CELL = 20;
+const COLS = Math.floor(W / CELL);
+const ROWS = Math.floor(H / CELL);
+const midCol = Math.floor(COLS/2);
+
+// allow resizing
+window.addEventListener('resize', () => {
+  W = canvas.width = Math.floor(window.innerWidth - 320);
+  H = canvas.height = window.innerHeight;
+  draw();
+});
+
+// ---------- Grid generation ----------
+let grid = new Array(ROWS).fill(0).map(()=>new Array(COLS).fill(1)); // 1 building, 0 road
+
+function generateGrid(){
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) grid[r][c]=1;
+  const vRoads = [3, Math.floor(COLS/3), midCol, Math.floor(COLS*2/3), COLS-4];
+  const hRoads = [3, Math.floor(ROWS/3), Math.floor(ROWS*2/3), ROWS-4];
+  for(const c of vRoads) for(let r=0;r<ROWS;r++) grid[r][c]=0;
+  for(const r of hRoads) for(let c=0;c<COLS;c++) grid[r][c]=0;
+  for(let i=0;i<10;i++){ const rr=3+Math.floor(Math.random()*(ROWS-6)), cc=3+Math.floor(Math.random()*(COLS-6)); grid[rr][cc]=0; }
+}
+generateGrid();
+
+// ---------- helpers ----------
+function cellToXY(c,r){ return { x: c*CELL + CELL/2, y: r*CELL + CELL/2 }; }
+function xyToCell(x,y){ return { c: Math.floor(x/CELL), r: Math.floor(y/CELL) }; }
+function sectorForCell(c){ return (c < midCol) ? 'A' : 'B'; }
+function inBounds(c,r){ return c>=0 && c<COLS && r>=0 && r<ROWS; }
+function isRoadCell(c,r){ return inBounds(c,r) && grid[r][c] === 0; }
+
+// ---------- data ----------
+let orders = []; // {id,pickup:{c,r,x,y,sector}, drop:{...}, status, assignedAgent, cancelled}
+let orderCounter = 1;
+
+const agents = [];
+const agentStartPositions = [];
+
+// create agents (4: A-local, A-export, B-local, B-export)
+function addAgents(){
+  const aLocal = findNearestRoadCell(4,4);
+  const aExport = findNearestRoadCell(8,4);
+  const bLocal = findNearestRoadCell(midCol+4,4);
+  const bExport = findNearestRoadCell(midCol+8,4);
+  agents.push(makeAgent('A','local', aLocal.c, aLocal.r));
+  agentStartPositions.push({c:aLocal.c, r:aLocal.r});
+  agents.push(makeAgent('A','export', aExport.c, aExport.r));
+  agentStartPositions.push({c:aExport.c, r:aExport.r});
+  agents.push(makeAgent('B','local', bLocal.c, bLocal.r));
+  agentStartPositions.push({c:bLocal.c, r:bLocal.r});
+  agents.push(makeAgent('B','export', bExport.c, bExport.r));
+  agentStartPositions.push({c:bExport.c, r:bExport.r});
+}
+
+function makeAgent(sector, role, c, r){
+  const p = cellToXY(c,r);
+  return {
+    id: sector+'-'+role,
+    sector, role,
+    c, r,
+    x: p.x, y: p.y,
+    speed: 120, // pixels per second - used when computing gsap duration
+    route: [], // array of {c,r,x,y,orderId,phase}
+    bag: [],
+    paused: false, pauseTimer: 0,
+    moving:false // true when gsap tween active
+  };
+}
+
+addAgents();
+
+// find nearest road cell BFS
+function findNearestRoadCell(startC,startR){
+  const visited = Array.from({length:ROWS}, ()=>Array(COLS).fill(false));
+  const q=[{c:startC,r:startR}]; visited[startR][startC]=true;
+  while(q.length){
+    const cur = q.shift(); if(!inBounds(cur.c,cur.r)) continue;
+    if(grid[cur.r][cur.c]===0) return {c:cur.c, r:cur.r};
+    for(const [dc,dr] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nc=cur.c+dc, nr=cur.r+dr;
+      if(inBounds(nc,nr) && !visited[nr][nc]){ visited[nr][nc]=true; q.push({c:nc,r:nr}); }
+    }
+  }
+  return {c:0,r:0};
+}
+
+// ---------- UI bindings ----------
+const addOrderBtn = document.getElementById('addOrderBtn');
+const cancelModeBtn = document.getElementById('cancelModeBtn');
+const clearBtn = document.getElementById('clearBtn');
+const pauseSimBtn = document.getElementById('pauseSimBtn');
+const modeLabelEl = document.querySelector('.logo');
+
+let mode='idle';
+function updateMode(){ modeLabelEl.textContent = 'GRID ROADS — Mode: '+mode; }
+
+addOrderBtn.onclick = ()=>{ mode='addingPickup'; updateMode(); log('Click map to place PICKUP'); };
+cancelModeBtn.onclick = ()=>{ mode = (mode==='cancel') ? 'idle' : 'cancel'; updateMode(); log('Cancel mode toggled'); };
+clearBtn.onclick = ()=>{ clearAll(); };
+pauseSimBtn.onclick = ()=>{ pausedUI = !pausedUI; pauseSimBtn.textContent = pausedUI ? 'Resume':'Pause'; };
+
+canvas.addEventListener('click', ev=>{
+  const rect=canvas.getBoundingClientRect();
+  const x=ev.clientX-rect.left, y=ev.clientY-rect.top;
+  const cell = xyToCell(x,y);
+  const snapped = snapToRoad(cell.c,cell.r);
+  if(!snapped){ log('Click outside road'); return; }
+  if(mode==='addingPickup'){ window.tempPickup = {...snapped, x: snapped.c*CELL+CELL/2, y: snapped.r*CELL+CELL/2, sector: sectorForCell(snapped.c)}; mode='addingDrop'; updateMode(); log('Pickup selected'); draw(); return; }
+  if(mode==='addingDrop'){ const pickup = window.tempPickup; const drop = {...snapped, x: snapped.c*CELL+CELL/2, y: snapped.r*CELL+CELL/2, sector: sectorForCell(snapped.c)}; const id='O'+(orderCounter++); const order={id,pickup,drop,status:'waiting',assignedAgent:null,cancelled:false}; orders.push(order); log('Order '+id+' added'); assignOrder(order); mode='idle'; updateMode(); draw(); return; }
+  if(mode==='cancel'){ const o=findOrderAtXY(x,y); if(o){ if(o.status==='picked') log('Cannot cancel: already picked'); else { o.cancelled=true; log('Order '+o.id+' marked cancelled') } } }
+});
+
+// snap to nearest road within radius
+function snapToRoad(c0,r0){
+  const maxR=6;
+  for(let rad=0; rad<=maxR; rad++){
+    for(let dr=-rad; dr<=rad; dr++){
+      const candidates=[{c:c0+dr,r:r0-rad},{c:c0+dr,r:r0+rad},{c:c0-rad,r:r0+dr},{c:c0+rad,r:r0+dr}];
+      for(const p of candidates) if(inBounds(p.c,p.r) && isRoadCell(p.c,p.r)) return {c:p.c,r:p.r};
+    }
+  }
+  return null;
+}
+
+function findOrderAtXY(x,y){
+  return orders.find(o=>{
+    const d1=Math.hypot(x-o.pickup.x,y-o.pickup.y), d2=Math.hypot(x-o.drop.x,y-o.drop.y); return d1<12||d2<12;
+  });
+}
+
+// ---------- assignment & routing logic (kept from your "perfect" code) ----------
+
+function assignOrder(order){
+  const pSec = order.pickup.sector;
+  let ag;
+  if(order.pickup.sector === order.drop.sector){
+    ag = agents.find(a=>a.sector===pSec && a.role==='local');
+  } else {
+    ag = agents.find(a=>a.sector===pSec && a.role==='export');
+  }
+  if(!ag){ log('No agent for sector '+pSec); return; }
+  order.assignedAgent = ag.id;
+  rerouteAgent(ag);
+}
+
+// rerouteAgent with starvation prevention
+function rerouteAgent(agent){
+  const assignedOrders = orders.filter(o=>o.assignedAgent===agent.id && o.status!=='delivered' && !o.cancelled);
+  if(assignedOrders.length===0){ agent.route=[]; return; }
+  if(agent.route.length===0){ assignOrdersToRoute(agent, assignedOrders); return; }
+  const newWaiting = assignedOrders.filter(o=>o.status==='waiting');
+  if(!canInsertOrders(agent,newWaiting)){
+    log(`Agent ${agent.id} skipping reroute (starvation prevention)`);
+    const oldOrders = assignedOrders.filter(o=>!newWaiting.includes(o));
+    assignOrdersToRoute(agent, oldOrders);
+    return;
+  }
+  assignOrdersToRoute(agent, assignedOrders);
+}
+
+// greedy simulation to test if inserting new orders creates big path
+function canInsertOrders(agent,newOrders){
+  if(newOrders.length===0) return true;
+  const currentLen = agent.route.length || 1;
+  let all = orders.filter(o=>o.assignedAgent===agent.id && o.status!=='delivered' && !o.cancelled);
+  let cur = xyToCell(agent.x, agent.y);
+  let local = all.map(o=>({...o}));
+  let pathLen=0;
+  while(local.length>0){
+    let nearest=null, nd=Infinity;
+    for(const o of local){
+      const t = (o.status==='waiting') ? o.pickup : o.drop;
+      const d = heuristic(cur, t);
+      if(d<nd){ nd=d; nearest={o,t}; }
+    }
+    if(!nearest) break;
+    pathLen+=nd;
+    cur={c:nearest.t.c, r:nearest.t.r};
+    if(nearest.o.status==='waiting') nearest.o.status='picked'; else local = local.filter(x=>x.id!==nearest.o.id);
+  }
+  return pathLen <= currentLen * 1.6;
+}
+
+// create route steps by greedy nearest target
+function assignOrdersToRoute(agent, assignedOrders){
+  if(assignedOrders.length===0){ agent.route=[]; return; }
+  let cur = xyToCell(agent.x, agent.y);
+  let localOrders = assignedOrders.map(o=>({...o}));
+  let steps=[];
+  while(localOrders.length>0){
+    let next=null, nd=Infinity, phase=null;
+    for(const o of localOrders){
+      if(o.status==='waiting'){ const d=heuristic(cur, o.pickup); if(d<nd){ nd=d; next={pos:o.pickup, order:o}; phase='pickup'; } }
+      else { const d=heuristic(cur, o.drop); if(d<nd){ nd=d; next={pos:o.drop, order:o}; phase='delivery'; } }
+    }
+    if(!next) break;
+    const seg = findPathAStar(cur, next.pos);
+    if(!seg){ log('No path found for '+next.order.id+' (removing)'); localOrders = localOrders.filter(x=>x.id!==next.order.id); continue; }
+    // convert seg steps
+    for(let i=1;i<seg.length;i++){
+      const cell = seg[i];
+      steps.push({ c:cell.c, r:cell.r, x:cell.c*CELL+CELL/2, y:cell.r*CELL+CELL/2, orderId:next.order.id, phase: (cell.c===next.pos.c && cell.r===next.pos.r) ? phase : 'move' });
+    }
+    cur = {c: next.pos.c, r: next.pos.r};
+    if(phase==='pickup') next.order.status='picked'; else localOrders = localOrders.filter(x=>x.id!==next.order.id);
+  }
+  agent.route = steps;
+  // drop starting cell if equal to current pos
+  if(agent.route.length>0 && agent.route[0].c===agent.c && agent.route[0].r===agent.r) agent.route.shift();
+  agent.paused=false; agent.pauseTimer=0;
+  log(`Agent ${agent.id} rerouted with ${agent.route.length} steps`);
+}
+
+// A* (no diagonals)
+function findPathAStar(start,goal){
+  if(!isRoadCell(goal.c,goal.r)) return null;
+  const key = (n)=> n.c+','+n.r;
+  const open = [{...start, g:0, f:heuristic(start,goal), parent:null}];
+  const came = new Map(); came.set(key(start), open[0]);
+  const closed = new Set();
+  while(open.length){
+    open.sort((a,b)=>a.f-b.f);
+    const cur = open.shift();
+    if(cur.c===goal.c && cur.r===goal.r){
+      const path=[];
+      let n=cur;
+      while(n){ path.unshift({c:n.c,r:n.r}); n=n.parent; }
+      return path;
+    }
+    closed.add(key(cur));
+    for(const [dc,dr] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nc=cur.c+dc, nr=cur.r+dr;
+      if(!inBounds(nc,nr) || !isRoadCell(nc,nr) || closed.has(nc+','+nr)) continue;
+      const g = cur.g+1; const h = heuristic({c:nc,r:nr}, goal); const f = g+h;
+      const existing = came.get(nc+','+nr);
+      if(!existing || g < existing.g){
+        const node = {c:nc,r:nr,g,f,parent:cur};
+        came.set(nc+','+nr, node);
+        open.push(node);
+      }
+    }
+  }
+  return null;
+}
+function heuristic(a,b){ return Math.abs(a.c-b.c)+Math.abs(a.r-b.r); }
+
+// ---------- Movement using GSAP ----------
+function moveAgentToNext(agent){
+  if(agent.moving || agent.paused) return;
+  if(agent.route.length===0) return;
+  const step = agent.route.shift();
+  // if this step equals current cell, just trigger arrival handling immediately
+  if(step.c===agent.c && step.r===agent.r){
+    handleAgentArrival(agent, step);
+    // recursive to move next
+    setTimeout(()=>moveAgentToNext(agent), 1);
+    return;
+  }
+  agent.moving = true;
+  const duration = computeDuration(agent, step);
+  gsap.to(agent, {
+    x: step.x, y: step.y, duration: Math.max(0.08, duration),
+    ease: "power1.inOut",
+    onComplete: ()=>{
+      agent.c = step.c; agent.r = step.r; agent.moving=false;
+      handleAgentArrival(agent, step);
+      // After arrival, if paused by pickup/delivery we stop; else continue
+      if(!agent.paused) moveAgentToNext(agent);
+    }
+  });
+}
+
+function computeDuration(agent, step){
+  // speed in pixels per second; compute duration = distance / speed
+  const dx = step.x - agent.x, dy = step.y - agent.y;
+  const dist = Math.hypot(dx,dy);
+  return dist / Math.max(60, agent.speed); // clamp min speed
+}
+
+function handleAgentArrival(agent, step){
+  // find any orders relevant to this waypoint
+  const ordersAt = orders.filter(o=>{
+    if(o.assignedAgent !== agent.id) return false;
+    if(o.cancelled) return true;
+    if(o.status==='waiting' && o.pickup.c===agent.c && o.pickup.r===agent.r) return true;
+    if(o.status==='picked' && o.drop.c===agent.c && o.drop.r===agent.r) return true;
+    return false;
+  });
+  for(const o of ordersAt){
+    if(o.cancelled){
+      const idx = orders.findIndex(x=>x.id===o.id);
+      if(idx!==-1){ orders.splice(idx,1); log(`Cancelled ${o.id} removed at waypoint`); rerouteAgent(agent); }
+      continue;
+    }
+    if(o.status==='waiting' && o.pickup.c===agent.c && o.pickup.r===agent.r){
+      o.status='picked'; agent.bag.push(o.id); log(`${agent.id} picked ${o.id}`);
+      agent.paused=true; agent.pauseTimer=2000;
+      setTimeout(()=>{ agent.paused=false; rerouteAgent(agent); moveAgentToNext(agent); }, agent.pauseTimer);
+      return;
+    }
+    if(o.status==='picked' && o.drop.c===agent.c && o.drop.r===agent.r){
+      o.status='delivered'; const bi=agent.bag.indexOf(o.id); if(bi!==-1) agent.bag.splice(bi,1); log(`${agent.id} delivered ${o.id}`);
+      agent.paused=true; agent.pauseTimer=2000;
+      setTimeout(()=>{ agent.paused=false; rerouteAgent(agent); moveAgentToNext(agent); }, agent.pauseTimer);
+      return;
+    }
+  }
+}
+
+// ---------- Orders cancellation, clear ----------
+function cancelOrder(order){
+  if(order.status==='picked'){ log('Cannot cancel: already picked'); return; }
+  order.cancelled=true;
+  log(order.id+' marked cancelled (will be removed at next waypoint)');
+}
+
+function clearAll(){
+  orders=[]; orderCounter=1;
+  for(let i=0;i<agents.length;i++){
+    const a=agents[i];
+    a.route=[]; a.bag=[]; a.paused=false; a.pauseTimer=0; a.moving=false;
+    const sp = agentStartPositions[i];
+    a.c=sp.c; a.r=sp.r; const p=cellToXY(a.c,a.r); a.x=p.x; a.y=p.y;
+  }
+  generateGrid();
+  log('Cleared orders and reset agents');
+  updateDashboard();
+  draw();
+}
+
+// ---------- Drawing ----------
+function drawGrid(){
+  // background gradient already in CSS; draw cells
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      const x=c*CELL, y=r*CELL;
+      if(grid[r][c]===1){
+        ctx.fillStyle='#2b2b2b';
+        ctx.fillRect(x,y,CELL,CELL);
+      } else {
+        ctx.fillStyle='#07151a';
+        ctx.fillRect(x,y,CELL,CELL);
+      }
+    }
+  }
+  // sector overlays
+  ctx.fillStyle='rgba(31,182,255,0.03)';
+  ctx.fillRect(0,0, midCol*CELL, H);
+  ctx.fillStyle='rgba(255,184,107,0.03)';
+  ctx.fillRect(midCol*CELL,0, (COLS-midCol)*CELL, H);
+
+  // grid lines subtle
+  ctx.strokeStyle='rgba(255,255,255,0.02)';
+  ctx.lineWidth=1;
+  for(let c=0;c<=COLS;c++){ ctx.beginPath(); ctx.moveTo(c*CELL,0); ctx.lineTo(c*CELL,H); ctx.stroke(); }
+  for(let r=0;r<=ROWS;r++){ ctx.beginPath(); ctx.moveTo(0,r*CELL); ctx.lineTo(W,r*CELL); ctx.stroke(); }
+}
+
+function drawOrders(){
+  for(const o of orders){
+    // pickup
+    ctx.beginPath();
+    ctx.arc(o.pickup.x, o.pickup.y, 7, 0, Math.PI*2);
+    ctx.fillStyle = o.cancelled ? '#666' : '#2fb6ff';
+    ctx.fill();
+    // drop
+    ctx.beginPath();
+    ctx.arc(o.drop.x, o.drop.y, 7, 0, Math.PI*2);
+    ctx.fillStyle = o.cancelled ? '#666' : '#ff9b4a';
+    ctx.fill();
+    // id text
+    ctx.fillStyle='#000';
+    ctx.font='10px Arial';
+    ctx.fillText(o.id, o.pickup.x-6, o.pickup.y-12);
+  }
+}
+
+function drawAgents(){
+  for(const a of agents){
+    // draw route preview (axis-aligned segments)
+    if(a.route && a.route.length>0){
+      ctx.beginPath(); ctx.lineWidth=2; ctx.strokeStyle = (a.role==='local') ? 'rgba(47,182,255,0.9)' : 'rgba(255,156,60,0.9)';
+      ctx.moveTo(a.x, a.y);
+      let prevX=a.x, prevY=a.y;
+      for(const s of a.route){
+        const nx=s.x, ny=s.y;
+        if(nx !== prevX) { ctx.lineTo(nx, prevY); prevX=nx; }
+        if(ny !== prevY) { ctx.lineTo(prevX, ny); prevY=ny; }
+      }
+      ctx.stroke();
+    }
+
+    // agent circle glow
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, 10, 0, Math.PI*2);
+    ctx.fillStyle = (a.role==='local') ? '#07b2ff' : '#ff9844';
+    ctx.fill();
+    // id and bag
+    ctx.fillStyle='#001b22';
+    ctx.font='11px Arial';
+    ctx.fillText(a.id, a.x-18, a.y-14);
+    ctx.fillStyle='#fff';
+    ctx.font='10px monospace';
+    ctx.fillText('Bag:['+a.bag.join(',')+']', a.x-22, a.y+24);
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  drawGrid();
+  drawOrders();
+  drawAgents();
+  updateDashboard();
+}
+
+// ---------- Dashboard & logging ----------
+const logEl = document.getElementById('log');
+function log(msg){
+  const d = new Date(); const ts = d.toLocaleTimeString();
+  const p = document.createElement('div'); p.textContent = '['+ts+'] '+msg;
+  logEl.prepend(p); while(logEl.childNodes.length>200) logEl.removeChild(logEl.lastChild);
+  updateDashboard();
+}
+
+function updateDashboard(){
+  document.getElementById('statPending').textContent = orders.filter(o=>!o.cancelled && o.status!=='delivered').length;
+  document.getElementById('statAgents').textContent = agents.length;
+  const avg = Math.round( (agents.reduce((s,a)=>s + (a.route? a.route.length:0),0) || 0) / Math.max(1, agents.length) );
+  document.getElementById('statRoute').textContent = avg;
+  const al = document.getElementById('agentList'); al.innerHTML='';
+  for(const a of agents){
+    const div = document.createElement('div'); div.className='agentItem';
+    div.innerHTML = `<div>${a.id} <span style="color:#9fbff0">(${a.role})</span></div><div class="badge">Bag:${a.bag.length}</div>`;
+    al.appendChild(div);
+  }
+}
+
+// ---------- utility: snap for clicks  ----------
+function snapToRoad(c0,r0){
+  const maxRadius=6;
+  for(let radius=0; radius<=maxRadius; radius++){
+    for(let dr=-radius; dr<=radius; dr++){
+      const candidates=[{c:c0+dr,r:r0-radius},{c:c0+dr,r:r0+radius},{c:c0-radius,r:r0+dr},{c:c0+radius,r:r0+dr}];
+      for(const p of candidates) if(inBounds(p.c,p.r) && isRoadCell(p.c,p.r)) return {c:p.c,r:p.r};
+    }
+  }
+  return null;
+}
+
+// ---------- main loop to animate via GSAP-based movement ----------
+
+let pausedUI = false;
+function tick(){
+  if(!pausedUI){
+    // ensure agents that are not paused and not moving start moving to next
+    for(const a of agents) if(!a.paused && !a.moving && a.route && a.route.length>0) moveAgentToNext(a);
+  }
+  draw();
+  requestAnimationFrame(tick);
+}
+tick();
+
+// ---------- helpers for external use (if needed) ----------
+function findOrderAtXY(x,y){ return orders.find(o => Math.hypot(x-o.pickup.x,y-o.pickup.y)<12 || Math.hypot(x-o.drop.x,y-o.drop.y)<12); }
+
+// ---------- initial draw & log ----------
+draw();
+log('Flashy routing GUI ready. Add orders to test.');
+
+</script>
+</body>
+</html>

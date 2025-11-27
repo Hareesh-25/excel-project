@@ -1,0 +1,52 @@
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: 'Segoe UI', sans-serif;
+  background: #0d0d0d;
+  color: white;
+}
+
+/* Map Canvas */
+#mapCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* Dashboard Glass Effect */
+#dashboard {
+  position: absolute;
+  right: 20px;
+  top: 20px;
+  width: 250px;
+  padding: 20px;
+  background: rgba(255,255,255,0.1);
+  backdrop-filter: blur(10px);
+  border-radius: 15px;
+  border: 1px solid rgba(255,255,255,0.2);
+  box-shadow: 0 0 20px rgba(0,255,255,0.5);
+}
+
+#dashboard h1 {
+  font-size: 20px;
+  margin-bottom: 10px;
+  color: cyan;
+}
+
+#dashboard p {
+  font-size: 14px;
+  margin: 8px 0;
+}
+
+/* Neon sector lines */
+.sector {
+  stroke: rgba(0, 255, 255, 0.8);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 5px cyan);
+}
+
+/* Neon agent dots */
+.agent {
+  fill: lime;
+  filter: drop-shadow(0 0 5px lime);
+}
